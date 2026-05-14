@@ -11,14 +11,31 @@ from datetime import datetime, timedelta
 from config import TELEGRAM_TOKEN, ADMIN_ID
 import asyncio
 import psycopg2
+import os
+from flask import Flask
+from threading import Thread
 from config import DATABASE_URL
 
+# ---------- WEB SERVER FOR RENDER ----------
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health_check():
+    return "Bot is running!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+Thread(target=run_flask, daemon=True).start()
+
 conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
 cur = conn.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     language TEXT,
     paid_until TEXT,
     warned INTEGER DEFAULT 0
@@ -26,37 +43,34 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 cur.execute("""
 CREATE TABLE IF NOT EXISTS doctors (
-    doctor_id INTEGER PRIMARY KEY,
+    doctor_id BIGINT PRIMARY KEY,
     name TEXT
 )
 """)
 cur.execute("""
 CREATE TABLE IF NOT EXISTS messages (
-    msg_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    doctor_id INTEGER,
+    msg_id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    doctor_id BIGINT,
     content TEXT,
     msg_type TEXT,
     status TEXT DEFAULT 'unread',
     timestamp TEXT
 )
 """)
-conn.commit()
 
 # ---------- HELPERS ----------
 def get_user(uid):
-    cur.execute("SELECT language, paid_until, warned FROM users WHERE user_id=?", (uid,))
+    cur.execute("SELECT language, paid_until, warned FROM users WHERE user_id=%s", (uid,))
     return cur.fetchone()
 
 def set_language(uid, lang):
-    cur.execute("INSERT OR IGNORE INTO users (user_id, language) VALUES (?, ?)", (uid, lang))
-    cur.execute("UPDATE users SET language=? WHERE user_id=?", (lang, uid))
-    conn.commit()
+    cur.execute("INSERT INTO users (user_id, language) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING", (uid, lang))
+    cur.execute("UPDATE users SET language=%s WHERE user_id=%s", (lang, uid))
 
 def approve_user(uid):
     until = (datetime.now() + timedelta(days=1)).isoformat()
-    cur.execute("UPDATE users SET paid_until=?, warned=0 WHERE user_id=?", (until, uid))
-    conn.commit()
+    cur.execute("UPDATE users SET paid_until=%s, warned=0 WHERE user_id=%s", (until, uid))
 
 def is_paid(uid):
     user = get_user(uid)
@@ -86,9 +100,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     uid = msg.from_user.id
-
-    if uid == ADMIN_ID:
-        return
 
     user = get_user(uid)
 
@@ -163,9 +174,8 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cur.execute("""
     INSERT INTO messages(user_id, doctor_id, content, msg_type, status, timestamp)
-    VALUES (?, ?, ?, ?, 'unread', ?)
+    VALUES (%s, %s, %s, %s, 'unread', %s)
     """, (uid, doctor_id, content, msg_type, datetime.now().isoformat()))
-    conn.commit()
 
     await msg.reply_text("✅ Please wait for your doctor’s reply." if lang=="en" else "✅ የሐኪሞን መልስ ይጠብቁ።")
 
@@ -203,7 +213,8 @@ async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doctor_id = update.message.from_user.id
     state = pending_replies.get(doctor_id)
     if not state:
-        return
+        # If admin is not currently replying to someone, treat them as a regular user for testing
+        return await main_handler(update, context)
     uid, original_msg = state
     msg = update.message
 
@@ -223,9 +234,8 @@ async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await original_msg.edit_reply_markup(None)
 
     cur.execute("""
-    UPDATE messages SET status='replied' WHERE user_id=? AND content=? AND status='unread'
+    UPDATE messages SET status='replied' WHERE user_id=%s AND content=%s AND status='unread'
     """, (uid, reply_content))
-    conn.commit()
 
     pending_replies.pop(doctor_id)
     await msg.reply_text("✅ Reply sent & marked as REPLIED")
@@ -236,7 +246,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     cur.execute("SELECT COUNT(*) FROM users")
     total_users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE paid_until IS NOT NULL AND datetime(paid_until) > datetime('now')")
+    cur.execute("SELECT COUNT(*) FROM users WHERE paid_until IS NOT NULL AND CAST(paid_until AS TIMESTAMP) > NOW()")
     paid_users = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM messages WHERE status='unread'")
     unread_msgs = cur.fetchone()[0]
@@ -250,24 +260,20 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # ---------- EXPIRY CHECK ----------
-async def expiry_checker(app):
-    while True:
-        cur.execute("SELECT user_id, language, paid_until, warned FROM users WHERE paid_until IS NOT NULL")
-        for uid, lang, paid_until, warned in cur.fetchall():
-            remaining = (datetime.fromisoformat(paid_until) - datetime.now()).total_seconds()
-            if 0 < remaining < 3600 and warned == 0:
-                await app.bot.send_message(uid,
-                    "⚠️ Your access will expire in 1 hour." if lang=="en"
-                    else "⚠️ ክፍያዎ በ1 ሰዓት ውስጥ ይበቃል።")
-                cur.execute("UPDATE users SET warned=1 WHERE user_id=?", (uid,))
-                conn.commit()
-            if remaining <= 0:
-                await app.bot.send_message(uid,
-                    "⛔ Access expired. Please pay again." if lang=="en"
-                    else "⛔ ጊዜዎ አልፏል። 50 ብር እንደገና ይክፈሉ።")
-                cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=?", (uid,))
-                conn.commit()
-        await asyncio.sleep(600)
+async def expiry_checker(context: ContextTypes.DEFAULT_TYPE):
+    cur.execute("SELECT user_id, language, paid_until, warned FROM users WHERE paid_until IS NOT NULL")
+    for uid, lang, paid_until, warned in cur.fetchall():
+        remaining = (datetime.fromisoformat(paid_until) - datetime.now()).total_seconds()
+        if 0 < remaining < 3600 and warned == 0:
+            await context.bot.send_message(uid,
+                "⚠️ Your access will expire in 1 hour." if lang=="en"
+                else "⚠️ ክፍያዎ በ1 ሰዓት ውስጥ ይበቃል።")
+            cur.execute("UPDATE users SET warned=1 WHERE user_id=%s", (uid,))
+        if remaining <= 0:
+            await context.bot.send_message(uid,
+                "⛔ Access expired. Please pay again." if lang=="en"
+                else "⛔ ጊዜዎ አልፏል። 50 ብር እንደገና ይክፈሉ።")
+            cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=%s", (uid,))
 
 # ---------- RUN ----------
 app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -276,5 +282,5 @@ app.add_handler(MessageHandler(filters.User(ADMIN_ID) & ~filters.COMMAND, doctor
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
 app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, main_handler))
-asyncio.get_event_loop().create_task(expiry_checker(app))
+app.job_queue.run_repeating(expiry_checker, interval=600, first=10)
 app.run_polling()

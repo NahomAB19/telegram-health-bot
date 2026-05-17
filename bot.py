@@ -371,16 +371,21 @@ async def expiry_checker(context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT user_id, language, paid_until, warned FROM users WHERE paid_until IS NOT NULL")
     for uid, lang, paid_until, warned in cur.fetchall():
         remaining = (datetime.fromisoformat(paid_until) - datetime.now()).total_seconds()
-        if 0 < remaining < 3600 and warned == 0:
-            await context.bot.send_message(uid,
-                "⚠️ Your access will expire in 1 hour." if lang=="en"
-                else "⚠️ ክፍያዎ በ1 ሰዓት ውስጥ ይበቃል።")
-            cur.execute("UPDATE users SET warned=1 WHERE user_id=%s", (uid,))
-        if remaining <= 0:
-            await context.bot.send_message(uid,
-                "⛔ Access expired. Please pay again." if lang=="en"
-                else "⛔ ጊዜዎ አልፏል። 50 ብር እንደገና ይክፈሉ።")
-            cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=%s", (uid,))
+        try:
+            if 0 < remaining < 3600 and warned == 0:
+                await context.bot.send_message(uid,
+                    "⚠️ Your access will expire in 1 hour." if lang=="en"
+                    else "⚠️ ክፍያዎ በ1 ሰዓት ውስጥ ይበቃል።")
+                cur.execute("UPDATE users SET warned=1 WHERE user_id=%s", (uid,))
+            if remaining <= 0:
+                await context.bot.send_message(uid,
+                    "⛔ Access expired. Please pay again." if lang=="en"
+                    else "⛔ ጊዜዎ አልፏል። 50 ብር እንደገና ይክፈሉ።")
+                cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=%s", (uid,))
+        except Exception as e:
+            print(f"Could not notify user {uid}: {e}")
+            if remaining <= 0:
+                cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=%s", (uid,))
 
 # ---------- ADMIN COMMAND ----------
 async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

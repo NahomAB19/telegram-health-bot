@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from config import TELEGRAM_TOKEN, ADMIN_IDS
 import asyncio
 import psycopg2
+import urllib.request
 import psycopg2.extras
 import os
 import random
@@ -504,6 +505,20 @@ async def db_keepalive(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"DB keep-alive failed: {e}")
 
+# ---------- SELF-PING TO PREVENT RENDER SLEEP ----------
+async def self_ping(context: ContextTypes.DEFAULT_TYPE):
+    """Ping own Flask endpoint every 4 minutes so Render doesn't shut us down."""
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if not render_url:
+        return
+    try:
+        url = render_url.rstrip("/") + "/"
+        req = urllib.request.Request(url, headers={"User-Agent": "HealthBot-Keepalive/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info(f"Self-ping OK: {resp.status}")
+    except Exception as e:
+        logger.warning(f"Self-ping failed: {e}")
+
 # ---------- ADMIN COMMAND ----------
 async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id not in ADMIN_IDS:
@@ -526,5 +541,15 @@ app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, main_handler))
 
 app.job_queue.run_repeating(expiry_checker, interval=600, first=10)
 app.job_queue.run_repeating(db_keepalive, interval=300, first=30)
+app.job_queue.run_repeating(self_ping, interval=240, first=60)
 
-app.run_polling(drop_pending_updates=True)
+# ---------- POLLING WITH AUTO-RESTART ----------
+import time
+
+while True:
+    try:
+        logger.info("Starting bot polling...")
+        app.run_polling(drop_pending_updates=True)
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}. Restarting in 10 seconds...", exc_info=True)
+        time.sleep(10)

@@ -194,12 +194,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             approve_user(uid)
             await context.bot.send_message(uid, "✅ Payment approved. You can now ask your question." if lang=="en"
                                            else "✅ ክፍያዎ ተረጋግጧል። ጥያቄዎን ይጠይቁ።")
-            await query.message.edit_caption(query.message.caption + "\n✅ APPROVED")
+            await query.message.edit_caption(query.message.caption + "\n✅ APPROVED", reply_markup=None)
         else:
             await context.bot.send_message(uid, "❌ Payment not approved. Please resend proof." if lang=="en"
                                            else "❌ ክፍያዎ አልተረጋገጠም። እባኮት ትክክለኛውን ፎቶ ደግመው ይላኩ።")
-            await query.message.edit_caption(query.message.caption + "\n❌ NOT APPROVED")
-        await query.message.edit_reply_markup(None)
+            await query.message.edit_caption(query.message.caption + "\n❌ NOT APPROVED", reply_markup=None)
         return
 
     # ---------- CONSULTATION REPLY ----------
@@ -230,8 +229,13 @@ async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         return
 
-    await original_msg.edit_text(original_msg.text + "\n\n✅ REPLIED")
-    await original_msg.edit_reply_markup(None)
+    try:
+        if original_msg.text:
+            await original_msg.edit_text(original_msg.text + "\n\n✅ REPLIED", reply_markup=None)
+        elif original_msg.caption:
+            await original_msg.edit_caption(original_msg.caption + "\n\n✅ REPLIED", reply_markup=None)
+    except Exception as e:
+        print(f"Failed to edit original message: {e}")
 
     cur.execute("""
     UPDATE messages SET status='replied' WHERE user_id=%s AND content=%s AND status='unread'

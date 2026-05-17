@@ -12,6 +12,7 @@ from config import TELEGRAM_TOKEN, ADMIN_ID
 import asyncio
 import psycopg2
 import os
+import random
 from flask import Flask
 from threading import Thread
 from config import DATABASE_URL
@@ -55,13 +56,20 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,
     msg_type TEXT,
     status TEXT DEFAULT 'unread',
-    timestamp TEXT
 )
 """)
 
+cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='assigned_doctor_id'")
+if not cur.fetchone():
+    cur.execute("ALTER TABLE users ADD COLUMN assigned_doctor_id BIGINT")
+
+cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='doctors' AND column_name='is_available'")
+if not cur.fetchone():
+    cur.execute("ALTER TABLE doctors ADD COLUMN is_available BOOLEAN DEFAULT TRUE")
+
 # ---------- HELPERS ----------
 def get_user(uid):
-    cur.execute("SELECT language, paid_until, warned FROM users WHERE user_id=%s", (uid,))
+    cur.execute("SELECT language, paid_until, warned, assigned_doctor_id FROM users WHERE user_id=%s", (uid,))
     return cur.fetchone()
 
 def set_language(uid, lang):
@@ -70,18 +78,14 @@ def set_language(uid, lang):
 
 def approve_user(uid):
     until = (datetime.now() + timedelta(days=1)).isoformat()
-    cur.execute("UPDATE users SET paid_until=%s, warned=0 WHERE user_id=%s", (until, uid))
+    cur.execute("SELECT doctor_id FROM doctors WHERE is_available = TRUE")
+    doctors = [d[0] for d in cur.fetchall()]
+    assigned_doc = random.choice(doctors) if doctors else ADMIN_ID
+    cur.execute("UPDATE users SET paid_until=%s, warned=0, assigned_doctor_id=%s WHERE user_id=%s", (until, assigned_doc, uid))
 
 def is_paid(uid):
     user = get_user(uid)
     return user and user[1] and datetime.fromisoformat(user[1]) > datetime.now()
-
-def assign_doctor(uid):
-    cur.execute("SELECT doctor_id FROM doctors")
-    doctors = [d[0] for d in cur.fetchall()]
-    if not doctors:
-        return ADMIN_ID  # fallback
-    return doctors[uid % len(doctors)]
 
 # ---------- ADMIN REPLY STATE ----------
 pending_replies = {}  # doctor_id -> (user_id, original_message)
@@ -132,8 +136,8 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    lang, paid_until, warned = user
-
+    lang, paid_until, warned, assigned_doctor_id = user
+    
     # ---------- PAYMENT HANDLING ----------
     if not is_paid(uid):
         if msg.photo:
@@ -153,7 +157,7 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ---------- CONSULTATION HANDLING ----------
-    doctor_id = assign_doctor(uid)
+    doctor_id = assigned_doctor_id if assigned_doctor_id else ADMIN_ID
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🩺 Reply", callback_data=f"reply_{uid}")]])
     header = f"📩 Consultation\nUser ID: {uid}"
 
@@ -279,12 +283,68 @@ async def expiry_checker(context: ContextTypes.DEFAULT_TYPE):
                 else "⛔ ጊዜዎ አልፏል። 50 ብር እንደገና ይክፈሉ።")
             cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=%s", (uid,))
 
+# ---------- ADMIN DOCTOR MANAGEMENT ----------
+async def add_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID: return
+    try:
+        doc_id = int(context.args[0])
+        name = " ".join(context.args[1:])
+        cur.execute("INSERT INTO doctors (doctor_id, name, is_available) VALUES (%s, %s, TRUE) ON CONFLICT (doctor_id) DO UPDATE SET is_available = TRUE, name = EXCLUDED.name", (doc_id, name))
+        await update.message.reply_text(f"✅ Doctor {name} ({doc_id}) added and is available.")
+    except Exception as e:
+        await update.message.reply_text("Usage: /add_doctor <id> <name>")
+
+async def remove_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID: return
+    try:
+        doc_id = int(context.args[0])
+        cur.execute("DELETE FROM doctors WHERE doctor_id=%s", (doc_id,))
+        await update.message.reply_text(f"✅ Doctor {doc_id} removed.")
+    except:
+        await update.message.reply_text("Usage: /remove_doctor <id>")
+
+async def available_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID: return
+    try:
+        doc_id = int(context.args[0])
+        cur.execute("UPDATE doctors SET is_available=TRUE WHERE doctor_id=%s", (doc_id,))
+        await update.message.reply_text(f"✅ Doctor {doc_id} is now AVAILABLE.")
+    except:
+        await update.message.reply_text("Usage: /available <id>")
+
+async def unavailable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID: return
+    try:
+        doc_id = int(context.args[0])
+        cur.execute("UPDATE doctors SET is_available=FALSE WHERE doctor_id=%s", (doc_id,))
+        await update.message.reply_text(f"✅ Doctor {doc_id} is now UNAVAILABLE.")
+    except:
+        await update.message.reply_text("Usage: /unavailable <id>")
+
+async def list_doctors_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID: return
+    cur.execute("SELECT doctor_id, name, is_available FROM doctors")
+    docs = cur.fetchall()
+    if not docs:
+        await update.message.reply_text("No doctors found.")
+        return
+    msg = "🩺 Doctors List:\n\n"
+    for d in docs:
+        status = "✅ Available" if d[2] else "❌ Unavailable"
+        msg += f"ID: {d[0]} | Name: {d[1]} | Status: {status}\n"
+    await update.message.reply_text(msg)
+
 # ---------- RUN ----------
 app = Application.builder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CallbackQueryHandler(button_handler))
 app.add_handler(MessageHandler(filters.User(ADMIN_ID) & ~filters.COMMAND, doctor_reply))
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
+app.add_handler(CommandHandler("add_doctor", add_doctor_cmd))
+app.add_handler(CommandHandler("remove_doctor", remove_doctor_cmd))
+app.add_handler(CommandHandler("available", available_cmd))
+app.add_handler(CommandHandler("unavailable", unavailable_cmd))
+app.add_handler(CommandHandler("doctors", list_doctors_cmd))
 app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, main_handler))
 app.job_queue.run_repeating(expiry_checker, interval=600, first=10)
 app.run_polling()

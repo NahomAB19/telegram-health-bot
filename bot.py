@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,
     msg_type TEXT,
     status TEXT DEFAULT 'unread',
+    timestamp TEXT
 )
 """)
 

@@ -16,4 +16,4 @@ if not ADMIN_ID:
 if not DATABASE_URL:
     raise RuntimeError("Missing DATABASE_URL environment variable")
 
-ADMIN_ID = int(ADMIN_ID)
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_ID.split(",") if x.strip()]

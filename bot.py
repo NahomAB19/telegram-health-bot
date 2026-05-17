@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 from datetime import datetime, timedelta
-from config import TELEGRAM_TOKEN, ADMIN_ID
+from config import TELEGRAM_TOKEN, ADMIN_IDS
 import asyncio
 import psycopg2
 import os
@@ -81,7 +81,7 @@ def approve_user(uid):
     until = (datetime.now() + timedelta(days=1)).isoformat()
     cur.execute("SELECT doctor_id FROM doctors WHERE is_available = TRUE")
     doctors = [d[0] for d in cur.fetchall()]
-    assigned_doc = random.choice(doctors) if doctors else ADMIN_ID
+    assigned_doc = random.choice(doctors) if doctors else ADMIN_IDS[0]
     cur.execute("UPDATE users SET paid_until=%s, warned=0, assigned_doctor_id=%s WHERE user_id=%s", (until, assigned_doc, uid))
 
 def is_paid(uid):
@@ -146,11 +146,12 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"),
                  InlineKeyboardButton("❌ Not Approved", callback_data=f"notapproved_{uid}")]
             ])
-            await context.bot.send_photo(
-                ADMIN_ID, msg.photo[-1].file_id,
-                caption=f"💰 Payment proof\nUser ID: {uid}",
-                reply_markup=kb
-            )
+            for admin_id in ADMIN_IDS:
+                await context.bot.send_photo(
+                    admin_id, msg.photo[-1].file_id,
+                    caption=f"💰 Payment proof\nUser ID: {uid}",
+                    reply_markup=kb
+                )
             await msg.reply_text("⏳ Payment under review." if lang=="en" else "⏳ ክፍያዎ እየተመረመረ ነው።")
             return
         else:
@@ -158,7 +159,7 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ---------- CONSULTATION HANDLING ----------
-    doctor_id = assigned_doctor_id if assigned_doctor_id else ADMIN_ID
+    doctor_id = assigned_doctor_id if assigned_doctor_id else ADMIN_IDS[0]
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🩺 Reply", callback_data=f"reply_{uid}")]])
     header = f"📩 Consultation\nUser ID: {uid}"
 
@@ -251,7 +252,7 @@ async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- STATUS ----------
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
+    if update.message.from_user.id not in ADMIN_IDS:
         return
     cur.execute("SELECT COUNT(*) FROM users")
     total_users = cur.fetchone()[0]
@@ -286,7 +287,7 @@ async def expiry_checker(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ADMIN DOCTOR MANAGEMENT ----------
 async def add_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.message.from_user.id not in ADMIN_IDS: return
     try:
         doc_id = int(context.args[0])
         name = " ".join(context.args[1:])
@@ -296,7 +297,7 @@ async def add_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /add_doctor <id> <name>")
 
 async def remove_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.message.from_user.id not in ADMIN_IDS: return
     try:
         doc_id = int(context.args[0])
         cur.execute("DELETE FROM doctors WHERE doctor_id=%s", (doc_id,))
@@ -305,7 +306,7 @@ async def remove_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /remove_doctor <id>")
 
 async def available_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.message.from_user.id not in ADMIN_IDS: return
     try:
         doc_id = int(context.args[0])
         cur.execute("UPDATE doctors SET is_available=TRUE WHERE doctor_id=%s", (doc_id,))
@@ -314,7 +315,7 @@ async def available_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /available <id>")
 
 async def unavailable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.message.from_user.id not in ADMIN_IDS: return
     try:
         doc_id = int(context.args[0])
         cur.execute("UPDATE doctors SET is_available=FALSE WHERE doctor_id=%s", (doc_id,))
@@ -323,7 +324,7 @@ async def unavailable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /unavailable <id>")
 
 async def list_doctors_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.message.from_user.id not in ADMIN_IDS: return
     cur.execute("SELECT doctor_id, name, is_available FROM doctors")
     docs = cur.fetchall()
     if not docs:
@@ -338,7 +339,7 @@ async def list_doctors_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- RUN ----------
 app = Application.builder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CallbackQueryHandler(button_handler))
-app.add_handler(MessageHandler(filters.User(ADMIN_ID) & ~filters.COMMAND, doctor_reply))
+app.add_handler(MessageHandler(filters.User(ADMIN_IDS) & ~filters.COMMAND, doctor_reply))
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
 app.add_handler(CommandHandler("add_doctor", add_doctor_cmd))

@@ -90,6 +90,7 @@ def is_paid(uid):
 
 # ---------- ADMIN REPLY STATE ----------
 pending_replies = {}  # doctor_id -> (user_id, original_message)
+admin_states = {}  # admin_id -> state
 
 # ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,6 +208,98 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_caption(query.message.caption + "\n❌ NOT APPROVED", reply_markup=None)
         return
 
+    # ---------- ADMIN DASHBOARD ----------
+    if data == "admin_menu_main":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Bot Status", callback_data="admin_status")],
+            [InlineKeyboardButton("👨‍⚕️ Manage Doctors", callback_data="admin_manage_docs")]
+        ])
+        await query.message.edit_text("⚙️ **Admin Dashboard**", reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if data == "admin_status":
+        cur.execute("SELECT COUNT(*) FROM users")
+        total_users = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE paid_until IS NOT NULL AND CAST(paid_until AS TIMESTAMP) > NOW()")
+        paid_users = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM messages WHERE status='unread'")
+        unread_msgs = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM messages WHERE status='replied'")
+        replied_msgs = cur.fetchone()[0]
+        msg = (f"📊 Total users: {total_users}\n"
+               f"✅ Paid users: {paid_users}\n"
+               f"🔴 Unread messages: {unread_msgs}\n"
+               f"✅ Replied messages: {replied_msgs}")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_menu_main")]])
+        await query.message.edit_text(msg, reply_markup=kb)
+        return
+
+    if data == "admin_manage_docs" or data == "admin_cancel_add":
+        if data == "admin_cancel_add":
+            admin_states.pop(doctor_id, None)
+        cur.execute("SELECT doctor_id, name, is_available FROM doctors")
+        docs = cur.fetchall()
+        kb = []
+        for d in docs:
+            status = "✅" if d[2] else "❌"
+            kb.append([InlineKeyboardButton(f"{status} {d[1]}", callback_data=f"admin_doc_{d[0]}")])
+        kb.append([InlineKeyboardButton("➕ Add Doctor", callback_data="admin_add_doc_start")])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_menu_main")])
+        await query.message.edit_text("👨‍⚕️ **Manage Doctors**\nSelect a doctor to edit:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return
+
+    if data.startswith("admin_doc_"):
+        doc_id = int(data.replace("admin_doc_", ""))
+        cur.execute("SELECT name, is_available FROM doctors WHERE doctor_id=%s", (doc_id,))
+        doc = cur.fetchone()
+        if not doc:
+            await query.answer("Doctor not found!")
+            return
+        status = "Available" if doc[1] else "Unavailable"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Toggle Availability ({status})", callback_data=f"admin_toggle_{doc_id}")],
+            [InlineKeyboardButton("🗑️ Remove Doctor", callback_data=f"admin_remove_{doc_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="admin_manage_docs")]
+        ])
+        await query.message.edit_text(f"👨‍⚕️ **Doctor Details**\nName: {doc[0]}\nID: {doc_id}", reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if data.startswith("admin_toggle_"):
+        doc_id = int(data.replace("admin_toggle_", ""))
+        cur.execute("UPDATE doctors SET is_available = NOT is_available WHERE doctor_id=%s", (doc_id,))
+        await query.answer("Availability toggled!")
+        cur.execute("SELECT name, is_available FROM doctors WHERE doctor_id=%s", (doc_id,))
+        doc = cur.fetchone()
+        status = "Available" if doc[1] else "Unavailable"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Toggle Availability ({status})", callback_data=f"admin_toggle_{doc_id}")],
+            [InlineKeyboardButton("🗑️ Remove Doctor", callback_data=f"admin_remove_{doc_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="admin_manage_docs")]
+        ])
+        await query.message.edit_reply_markup(reply_markup=kb)
+        return
+
+    if data.startswith("admin_remove_"):
+        doc_id = int(data.replace("admin_remove_", ""))
+        cur.execute("DELETE FROM doctors WHERE doctor_id=%s", (doc_id,))
+        await query.answer("Doctor removed!")
+        cur.execute("SELECT doctor_id, name, is_available FROM doctors")
+        docs = cur.fetchall()
+        kb = []
+        for d in docs:
+            status = "✅" if d[2] else "❌"
+            kb.append([InlineKeyboardButton(f"{status} {d[1]}", callback_data=f"admin_doc_{d[0]}")])
+        kb.append([InlineKeyboardButton("➕ Add Doctor", callback_data="admin_add_doc_start")])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_menu_main")])
+        await query.message.edit_text("👨‍⚕️ **Manage Doctors**\nSelect a doctor to edit:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return
+
+    if data == "admin_add_doc_start":
+        admin_states[doctor_id] = "add_doctor"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="admin_cancel_add")]])
+        await query.message.edit_text("✍️ **Add a New Doctor**\nPlease send the doctor's Telegram ID and Name in the chat.\n\nExample:\n`123456789 Dr. Abebe`", parse_mode="Markdown", reply_markup=kb)
+        return
+
     # ---------- CONSULTATION REPLY ----------
     if data.startswith("reply_"):
         uid = int(data.split("_")[1])
@@ -216,6 +309,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- DOCTOR REPLY ----------
 async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doctor_id = update.message.from_user.id
+
+    if doctor_id in admin_states and admin_states[doctor_id] == "add_doctor":
+        msg = update.message
+        if not msg.text:
+            await msg.reply_text("Please send the ID and Name as text.")
+            return
+        parts = msg.text.split()
+        if len(parts) < 2:
+            await msg.reply_text("Invalid format. Use: 123456789 Dr. Name")
+            return
+        try:
+            new_doc_id = int(parts[0])
+            name = " ".join(parts[1:])
+            cur.execute("INSERT INTO doctors (doctor_id, name, is_available) VALUES (%s, %s, TRUE) ON CONFLICT (doctor_id) DO UPDATE SET is_available = TRUE, name = EXCLUDED.name", (new_doc_id, name))
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Doctors", callback_data="admin_manage_docs")]])
+            await msg.reply_text(f"✅ Doctor {name} ({new_doc_id}) added and is available.", reply_markup=kb)
+            admin_states.pop(doctor_id)
+        except Exception as e:
+            await msg.reply_text(f"Failed: {e}")
+        return
+
     state = pending_replies.get(doctor_id)
     if not state:
         # If admin is not currently replying to someone, treat them as a regular user for testing
@@ -250,24 +364,7 @@ async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_replies.pop(doctor_id)
     await msg.reply_text("✅ Reply sent & marked as REPLIED")
 
-# ---------- STATUS ----------
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS:
-        return
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE paid_until IS NOT NULL AND CAST(paid_until AS TIMESTAMP) > NOW()")
-    paid_users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM messages WHERE status='unread'")
-    unread_msgs = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM messages WHERE status='replied'")
-    replied_msgs = cur.fetchone()[0]
-
-    msg = (f"📊 Total users: {total_users}\n"
-           f"✅ Paid users: {paid_users}\n"
-           f"🔴 Unread messages: {unread_msgs}\n"
-           f"✅ Replied messages: {replied_msgs}")
-    await update.message.reply_text(msg)
+# Status command removed, handled via inline button
 
 # ---------- EXPIRY CHECK ----------
 async def expiry_checker(context: ContextTypes.DEFAULT_TYPE):
@@ -285,68 +382,21 @@ async def expiry_checker(context: ContextTypes.DEFAULT_TYPE):
                 else "⛔ ጊዜዎ አልፏል። 50 ብር እንደገና ይክፈሉ።")
             cur.execute("UPDATE users SET paid_until=NULL, warned=0 WHERE user_id=%s", (uid,))
 
-# ---------- ADMIN DOCTOR MANAGEMENT ----------
-async def add_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- ADMIN COMMAND ----------
+async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id not in ADMIN_IDS: return
-    try:
-        doc_id = int(context.args[0])
-        name = " ".join(context.args[1:])
-        cur.execute("INSERT INTO doctors (doctor_id, name, is_available) VALUES (%s, %s, TRUE) ON CONFLICT (doctor_id) DO UPDATE SET is_available = TRUE, name = EXCLUDED.name", (doc_id, name))
-        await update.message.reply_text(f"✅ Doctor {name} ({doc_id}) added and is available.")
-    except Exception as e:
-        await update.message.reply_text("Usage: /add_doctor <id> <name>")
-
-async def remove_doctor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS: return
-    try:
-        doc_id = int(context.args[0])
-        cur.execute("DELETE FROM doctors WHERE doctor_id=%s", (doc_id,))
-        await update.message.reply_text(f"✅ Doctor {doc_id} removed.")
-    except:
-        await update.message.reply_text("Usage: /remove_doctor <id>")
-
-async def available_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS: return
-    try:
-        doc_id = int(context.args[0])
-        cur.execute("UPDATE doctors SET is_available=TRUE WHERE doctor_id=%s", (doc_id,))
-        await update.message.reply_text(f"✅ Doctor {doc_id} is now AVAILABLE.")
-    except:
-        await update.message.reply_text("Usage: /available <id>")
-
-async def unavailable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS: return
-    try:
-        doc_id = int(context.args[0])
-        cur.execute("UPDATE doctors SET is_available=FALSE WHERE doctor_id=%s", (doc_id,))
-        await update.message.reply_text(f"✅ Doctor {doc_id} is now UNAVAILABLE.")
-    except:
-        await update.message.reply_text("Usage: /unavailable <id>")
-
-async def list_doctors_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS: return
-    cur.execute("SELECT doctor_id, name, is_available FROM doctors")
-    docs = cur.fetchall()
-    if not docs:
-        await update.message.reply_text("No doctors found.")
-        return
-    msg = "🩺 Doctors List:\n\n"
-    for d in docs:
-        status = "✅ Available" if d[2] else "❌ Unavailable"
-        msg += f"ID: {d[0]} | Name: {d[1]} | Status: {status}\n"
-    await update.message.reply_text(msg)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Bot Status", callback_data="admin_status")],
+        [InlineKeyboardButton("👨‍⚕️ Manage Doctors", callback_data="admin_manage_docs")]
+    ])
+    await update.message.reply_text("⚙️ **Admin Dashboard**", reply_markup=kb, parse_mode="Markdown")
 
 # ---------- RUN ----------
 app = Application.builder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CallbackQueryHandler(button_handler))
 app.add_handler(MessageHandler(filters.User(ADMIN_IDS) & ~filters.COMMAND, doctor_reply))
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("status", status))
-app.add_handler(CommandHandler("add_doctor", add_doctor_cmd))
-app.add_handler(CommandHandler("remove_doctor", remove_doctor_cmd))
-app.add_handler(CommandHandler("available", available_cmd))
-app.add_handler(CommandHandler("unavailable", unavailable_cmd))
-app.add_handler(CommandHandler("doctors", list_doctors_cmd))
+app.add_handler(CommandHandler("admin", admin_menu_cmd))
 app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, main_handler))
 app.job_queue.run_repeating(expiry_checker, interval=600, first=10)
 app.run_polling()

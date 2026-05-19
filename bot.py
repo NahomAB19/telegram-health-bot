@@ -147,7 +147,7 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "- ማስተርበሽን (Masturbation) ጥያቄዎች\n"
                 "- የሽንት ቧንቧ በሽታዎች (UTI)\n"
                 "- ከነዚ ጋር የተያያዙ የትኛውንም ጥያቄዎች\n\n"
-                "ሁሉም መልዕክቶች፣ ጥያቄዎች እና ሚዲያ ሚስጥራዊ ናቸው።\n💳 50 ብር በTeleBirr\n📞 0994899023\n⏱ ለ 1 ቀን የሚቆይ\n📸 የክፍያ ስክሪንሹት ፎቶ ይላኩ"
+                "ሁሉም መልዕክቶች፣ ጥያቄዎች እና ሚዲያ ሚስጥራዊ ናቸው።\n💳 50 ብር በTeleBirr\n📞 `0994899023`\n⏱ ለ 1 ቀን የሚቆይ\n📸 የክፍያ ስክሪንሹት ፎቶ ይላኩ"
                 if lang == "am"
                 else
                 "This service provides confidential consultations with a qualified doctor on sexual and reproductive health.\n"
@@ -157,7 +157,8 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "- Masturbation concerns\n"
                 "- Urinary tract infections (UTI)\n"
                 "- Other related questions\n\n"
-                "All messages, questions, and media are private.\n💳 Pay 50 Birr via TeleBirr\n📞 0994899023\n⏱ Valid for 1 day\n📸 Send payment screenshot"
+                "All messages, questions, and media are private.\n💳 Pay 50 Birr via TeleBirr\n📞 `0994899023`\n⏱ Valid for 1 day\n📸 Send payment screenshot",
+                parse_mode="Markdown"
             )
             return
 

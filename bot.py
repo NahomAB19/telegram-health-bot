@@ -247,7 +247,8 @@ async def send_admin_menu(msg_or_query_msg, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📜 View Audit Logs", callback_data="admin_audit_logs")]
     ])
     text = "⚙️ **Admin Dashboard**"
-    if hasattr(msg_or_query_msg, 'edit_text'):
+    is_bot_msg = (msg_or_query_msg.from_user.id == context.bot.id) if (msg_or_query_msg and msg_or_query_msg.from_user) else False
+    if is_bot_msg and hasattr(msg_or_query_msg, 'edit_text'):
         await msg_or_query_msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
         await msg_or_query_msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -260,7 +261,8 @@ async def send_operator_menu(msg_or_query_msg, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("⏱ Response Stats", callback_data="op_response_stats")]
     ])
     text = "🛡️ **Operator Dashboard**"
-    if hasattr(msg_or_query_msg, 'edit_text'):
+    is_bot_msg = (msg_or_query_msg.from_user.id == context.bot.id) if (msg_or_query_msg and msg_or_query_msg.from_user) else False
+    if is_bot_msg and hasattr(msg_or_query_msg, 'edit_text'):
         await msg_or_query_msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
         await msg_or_query_msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")

@@ -96,9 +96,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- USER / PATIENT MESSAGES HANDLER ----------
 async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    if not msg:
+        return
     uid = msg.from_user.id
 
-    # If the user has a pending input state, route them accordingly
+    # 1. State-based routing (highest priority)
     if uid in report_states:
         await handle_report_reason(update, context)
         return
@@ -107,6 +109,27 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if uid in admin_input_states:
         await handle_admin_input(update, context)
+        return
+    if uid in pending_replies:
+        await doctor_reply_handler(update, context)
+        return
+
+    # 2. Role-based routing for non-state messages
+    if db.is_admin(uid):
+        await send_admin_menu(msg, context)
+        return
+    if db.is_operator(uid):
+        await send_operator_menu(msg, context)
+        return
+    if db.is_doctor(uid):
+        doc = db.db_execute("SELECT name, is_available FROM doctors WHERE doctor_id=%s", (uid,), fetch="one")
+        status = "Available" if doc[1] else "Unavailable"
+        await msg.reply_text(
+            f"👨‍⚕️ **Dr. {doc[0]}**\n"
+            f"Status: **{status}**\n\n"
+            "Use `/report` to report abusive patients.",
+            parse_mode="Markdown"
+        )
         return
 
     try:
@@ -241,6 +264,19 @@ async def send_operator_menu(msg_or_query_msg, context: ContextTypes.DEFAULT_TYP
         await msg_or_query_msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
         await msg_or_query_msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+# ---------- COMMAND CALLBACKS ----------
+async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    if not db.is_admin(uid):
+        return
+    await send_admin_menu(update.message, context)
+
+async def operator_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    if not db.is_operator(uid):
+        return
+    await send_operator_menu(update.message, context)
 
 # ---------- BUTTON & CALLBACK HANDLER ----------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -816,18 +852,12 @@ async def handle_report_reason(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("✅ Your report has been submitted. Our moderation team will review the conversation details shortly.")
 
 # ---------- DOCTOR REPLY MESSAGE RECEIVER ----------
-async def doctor_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def doctor_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doctor_id = update.message.from_user.id
-
-    # If the doctor is inputting details for other command states
-    if doctor_id in report_states:
-        await handle_report_reason(update, context)
-        return
 
     state = pending_replies.get(doctor_id)
     if not state:
-        # If doctor is not in reply state, process normal start or commands
-        return await main_handler(update, context)
+        return
 
     target_uid, original_msg = state
     msg = update.message
@@ -991,12 +1021,11 @@ app.add_error_handler(error_handler)
 app.add_handler(CallbackQueryHandler(button_handler))
 app.add_handler(CallbackQueryHandler(report_callback_handler, pattern="^report_"))
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", lambda u, c: send_admin_menu(u.message, c)))
-app.add_handler(CommandHandler("operator", lambda u, c: send_operator_menu(u.message, c)))
+app.add_handler(CommandHandler("admin", admin_menu_cmd))
+app.add_handler(CommandHandler("operator", operator_menu_cmd))
 app.add_handler(CommandHandler("report", report_command))
 
-# Doctor reply flow filtering
-app.add_handler(MessageHandler(filters.User(user_id=set(db.get_all_admins())) & ~filters.COMMAND, doctor_reply))
+# Message routing flow
 app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, main_handler))
 
 # Periodic Background Jobs

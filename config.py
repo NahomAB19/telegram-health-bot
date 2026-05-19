@@ -4,16 +4,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_ID       = os.getenv("ADMIN_ID")
+DATABASE_URL   = os.getenv("DATABASE_URL")
 
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Missing TELEGRAM_TOKEN environment variable")
-
 if not ADMIN_ID:
     raise RuntimeError("Missing ADMIN_ID environment variable")
-
 if not DATABASE_URL:
     raise RuntimeError("Missing DATABASE_URL environment variable")
 
+# Seed admins come from .env; extra admins/operators are stored in the DB.
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_ID.split(",") if x.strip()]
